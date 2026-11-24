@@ -1,5 +1,7 @@
 # How-Prosociality-Feedback-and-Psychoeducation-Improve-Motivation-to-Become-More-Prosocial
 
+[![DOI](https://zenodo.org/badge/1464570432.svg)](https://doi.org/10.5281/zenodo.24515503)
+
 ## Overview
 This repository provides study materials, data, and code for the manuscript titled "How Prosociality Feedback and Psychoeducation Improve Motivation to Become More Prosocial".
 
