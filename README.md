@@ -20,7 +20,7 @@ Cleaned data
 - "Prosocial_motivation_cleaned_data.csv": cleaned data used for analysis. 
 
 Figures
-Contains the figures presented in the manuscript.
+- Contains the figures presented in the manuscript.
 
 ## To use:
 1. Install the latest version of R and RStudio.
