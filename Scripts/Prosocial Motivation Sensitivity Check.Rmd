@@ -1,0 +1,401 @@
+---
+title: "Prosocial Motivation Sensitivity Check"
+date: "2025-12-09"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    highlight: tango
+    number_sections: true
+    code_folding: show
+    theme: cosmo
+    self_contained: true
+output_dir: "."
+---
+
+# Set up
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load packages
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(simr)
+library(car)
+
+# Clear work space
+rm(list = ls())
+
+# Set system language
+Sys.setenv(LANG = "en")
+
+# Read file
+task_filename <- "../Cleaned data/Prosocial_motivation_cleaned_data.csv"
+mot_clean <- read.csv(task_filename, header = TRUE)
+
+```
+
+# Prepare data
+
+```{r motivations changes vs prosociality prep}
+#---------------------------------
+# Data prep
+#---------------------------------
+# Select variables for analysis
+MEM_var <- mot_clean %>%
+  select(
+    # id, condition order, & controls
+    participant_id,
+    feedback_first,
+    age,
+    gender,
+    income,
+    
+    #inspect the influence of prosociality
+    prosociality,
+    TriPM_total,
+    
+    # change goal variables
+    change_goal_initial,
+    change_goal_final,
+    change_goal_pre_feedback,
+    change_goal_post_feedback,
+    change_goal_pre_psychoed,
+    change_goal_post_psychoed
+  )
+
+```
+
+# Sensitivity test
+
+Sensitivity Power Analysis via Monte Carlo Simulation
+Find the Minimum Detectable Effect Size (MDES) for the interaction term at 80% power
+
+## All Conditions
+Find the MDES for the time_all_conditions * prosociality_z term at 80% power
+
+sim_model_all_conditions <- lmer(
+  change_z ~ time_all_conditions * prosociality_z + age_z + gender + income_z +
+    (1 | participant_id),
+  data    = mot_all_z,
+  control = ctrl
+)
+
+
+```{r sensitivity check}
+#---------------------------------
+# Prep
+#---------------------------------
+# Transform MEM_var from long to wide
+mot_all <- MEM_var %>%
+  pivot_longer(
+    cols = c(change_goal_initial, change_goal_final),
+    names_to = "time_all_conditions",
+    values_to = "change_goal_all_condition"
+  ) %>%
+  mutate(
+    time_all_conditions = dplyr::recode(
+      time_all_conditions,
+      change_goal_initial = "Initial",
+      change_goal_final   = "Final"
+    )
+  )
+
+# Factor time and reorder
+mot_all$time_all_conditions <- factor(mot_all$time_all_conditions, levels = c("Initial", "Final"))
+
+#---------------------------------
+# Models
+#---------------------------------
+# ----- Standardize -----
+mot_all_z <- mot_all
+
+# z-score outcome + continuous predictors
+mot_all_z$change_z        <- as.numeric(scale(mot_all_z$change_goal_all_condition))
+mot_all_z$prosociality_z  <- as.numeric(scale(mot_all_z$prosociality))
+mot_all_z$age_z           <- as.numeric(scale(mot_all_z$age))
+mot_all_z$income_z        <- as.numeric(scale(mot_all_z$income))
+
+# ----- Fit model -----
+ctrl <- lmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5))
+
+sim_model_all_conditions <- lmer(
+  change_z ~ time_all_conditions * prosociality_z + age_z + gender + income_z +
+    (1 | participant_id),
+  data    = mot_all_z,
+  control = ctrl
+)
+
+#---------------------------------
+# Simulation
+#---------------------------------
+# ----- Set up simulation -----
+# Show progress bar
+simrOptions(progress = TRUE)
+
+# Extracts the fixed effect parameter names
+int_term <- grep(":", names(fixef(sim_model_all_conditions)), value = TRUE)[1]
+cat("Target interaction term:", int_term, "\n")
+
+# MDES search
+betas_to_test <- c(0.35, 0.30, 0.25, 0.20, 0.15, 0.10)
+mdes_results_all_conditions <- data.frame(beta = betas_to_test, power = NA, ci_lo = NA, ci_hi = NA)
+
+for (i in seq_along(betas_to_test)) {
+  b <- betas_to_test[i]
+  fixef(sim_model_all_conditions)[int_term] <- b
+  
+  ps <- tryCatch(
+    powerSim(sim_model_all_conditions, nsim = 1000, seed = 1, test = fixed(int_term, "sa")),
+    error = function(e) { message("Sim failed at beta=", b, ": ", e$message); NULL }
+  )
+  
+  if (!is.null(ps)) {
+    s <- summary(ps)
+    mdes_results_all_conditions$power[i] <- s$mean
+    mdes_results_all_conditions$ci_lo[i] <- s$lower
+    mdes_results_all_conditions$ci_hi[i] <- s$upper
+  }
+}
+
+print(mdes_results_all_conditions)
+
+# ----- Plot -----
+ggplot(mdes_results_all_conditions, aes(x = beta, y = power)) +
+  geom_line() +
+  geom_point() +
+  geom_ribbon(aes(ymin = ci_lo, ymax = ci_hi), alpha = 0.15) +
+  geom_hline(yintercept = 0.80, linetype = "dashed", color = "red") +
+  scale_x_reverse() + # Reverses axis so beta goes from 0.10 -> 0.35
+  labs(x = "Standardized interaction coefficient (beta)",
+       y = "Estimated power",
+       title = "Sensitivity Curve: N = 200") +
+  theme_minimal()
+
+# ----- Interpolate MDES at 80% power -----
+clean_res <- na.omit(mdes_results_all_conditions)
+fit80 <- approx(x = clean_res$power, y = clean_res$beta, xout = 0.80)
+cat("\n---> Approximate MDES at 80% power: beta =", round(fit80$y, 3), "\n")
+
+```
+
+## Feedback Conditions
+Find the MDES for the time_feedback * prosociality_z term at 80% power
+
+sim_model_feedback <- lmer(
+  change_z ~ time_feedback * prosociality_z + age_z + gender + income_z + (1 | participant_id),
+  data    = mot_feedback_z,
+  control = ctrl
+)
+
+```{r sensitivity check 2}
+#---------------------------------
+# Prep
+#---------------------------------
+# Transform MEM_var from long to wide
+mot_feedback <- MEM_var %>%
+  pivot_longer(
+    cols = c(change_goal_pre_feedback, change_goal_post_feedback),
+    names_to = "time_feedback",
+    values_to = "change_goal_feedback"
+  ) %>%
+  mutate(
+    time_feedback = dplyr::recode(
+      time_feedback,
+      change_goal_pre_feedback  = "Pre-feedback",
+      change_goal_post_feedback = "Post-feedback"
+    )
+  )
+
+# Factor time and reorder
+mot_feedback$time_feedback <- factor(
+  mot_feedback$time_feedback,
+  levels = c("Pre-feedback", "Post-feedback")
+)
+# Keep only when the participant completed the feedback condition first
+mot_feedback <- mot_feedback %>%
+  filter(feedback_first == 1)
+
+#---------------------------------
+# Models
+#---------------------------------
+# ----- Standardize -----
+mot_feedback_z <- mot_feedback
+
+# z-score outcome + continuous predictors
+mot_feedback_z$change_z        <- as.numeric(scale(mot_feedback_z$change_goal_feedback))
+mot_feedback_z$prosociality_z  <- as.numeric(scale(mot_feedback_z$prosociality))
+mot_feedback_z$age_z           <- as.numeric(scale(mot_feedback_z$age))
+mot_feedback_z$income_z        <- as.numeric(scale(mot_feedback_z$income))
+
+# ----- Fit model -----
+ctrl <- lmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5))
+
+sim_model_feedback <- lmer(
+  change_z ~ time_feedback * prosociality_z + age_z + gender + income_z + (1 | participant_id),
+  data    = mot_feedback_z,
+  control = ctrl
+)
+
+#---------------------------------
+# Simulation
+#---------------------------------
+# ----- Set up simulation -----
+# Show progress bar
+simrOptions(progress = TRUE)
+
+# Extracts the fixed effect parameter names
+int_term <- grep(":", names(fixef(sim_model_feedback)), value = TRUE)[1]
+cat("Target interaction term:", int_term, "\n")
+
+# MDES search
+betas_to_test <- c(0.35, 0.30, 0.25, 0.20, 0.15, 0.10)
+mdes_results_feedback <- data.frame(beta = betas_to_test, power = NA, ci_lo = NA, ci_hi = NA)
+
+for (i in seq_along(betas_to_test)) {
+  b <- betas_to_test[i]
+  fixef(sim_model_feedback)[int_term] <- b
+  
+  ps <- tryCatch(
+    powerSim(sim_model_feedback, nsim = 1000, seed = 1, test = fixed(int_term, "sa")),
+    error = function(e) { message("Sim failed at beta=", b, ": ", e$message); NULL }
+  )
+  
+  if (!is.null(ps)) {
+    s <- summary(ps)
+    mdes_results_feedback$power[i] <- s$mean
+    mdes_results_feedback$ci_lo[i] <- s$lower
+    mdes_results_feedback$ci_hi[i] <- s$upper
+  }
+}
+
+print(mdes_results_feedback)
+
+# ----- Plot -----
+ggplot(mdes_results_feedback, aes(x = beta, y = power)) +
+  geom_line() +
+  geom_point() +
+  geom_ribbon(aes(ymin = ci_lo, ymax = ci_hi), alpha = 0.15) +
+  geom_hline(yintercept = 0.80, linetype = "dashed", color = "red") +
+  scale_x_reverse() + # Reverses axis so beta goes from 0.10 -> 0.35
+  labs(x = "Standardized interaction coefficient (beta)",
+       y = "Estimated power",
+       title = "Sensitivity Curve: N = 200") +
+  theme_minimal()
+
+# ----- Interpolate MDES at 80% power -----
+clean_res <- na.omit(mdes_results_feedback)
+fit80 <- approx(x = clean_res$power, y = clean_res$beta, xout = 0.80)
+cat("\n---> Approximate MDES at 80% power: beta =", round(fit80$y, 3), "\n")
+
+```
+
+## Psychoed Conditions
+Find the MDES for the time_psychoed * prosociality_z term at 80% power
+
+sim_model_psychoed <- lmer(
+  change_z ~ time_psychoed * prosociality_z + age_z + gender + income_z + (1 | participant_id),
+  data    = mot_psychoed_z,
+  control = ctrl
+)
+
+```{r sensitivity test 3}
+#---------------------------------
+# Prep
+#---------------------------------
+# Transform MEM_var from long to wide
+mot_psychoed <- MEM_var %>%
+  pivot_longer(
+    cols = c(change_goal_pre_psychoed, change_goal_post_psychoed),
+    names_to = "time_psychoed",
+    values_to = "change_goal_psychoed"
+  ) %>%
+  mutate(
+    time_psychoed = dplyr::recode(
+      time_psychoed,
+      change_goal_pre_psychoed  = "Pre-psychoed",
+      change_goal_post_psychoed = "Post-psychoed"
+    )
+  )
+
+# Factor time and reorder
+mot_psychoed$time_psychoed <- factor(mot_psychoed$time_psychoed,
+                                         levels = c("Pre-psychoed", "Post-psychoed"))
+# Keep only when the participant completed the psychoed condition first
+mot_psychoed <- mot_psychoed %>%
+  filter(feedback_first == 0)
+
+#---------------------------------
+# Models
+#---------------------------------
+# ----- Standardize -----
+mot_psychoed_z <- mot_psychoed
+
+# z-score outcome + continuous predictors
+mot_psychoed_z$change_z        <- as.numeric(scale(mot_psychoed_z$change_goal_psychoed))
+mot_psychoed_z$prosociality_z  <- as.numeric(scale(mot_psychoed_z$prosociality))
+mot_psychoed_z$age_z           <- as.numeric(scale(mot_psychoed_z$age))
+mot_psychoed_z$income_z        <- as.numeric(scale(mot_psychoed_z$income))
+
+# ----- Fit model -----
+ctrl <- lmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5))
+
+sim_model_psychoed <- lmer(
+  change_z ~ time_psychoed * prosociality_z + age_z + gender + income_z + (1 | participant_id),
+  data    = mot_psychoed_z,
+  control = ctrl
+)
+
+#---------------------------------
+# Simulation
+#---------------------------------
+# ----- Set up simulation -----
+# Show progress bar
+simrOptions(progress = TRUE)
+
+# Extracts the fixed effect parameter names
+int_term <- grep(":", names(fixef(sim_model_psychoed)), value = TRUE)[1]
+cat("Target interaction term:", int_term, "\n")
+
+# MDES search
+betas_to_test <- c(0.35, 0.30, 0.25, 0.20, 0.15, 0.10)
+mdes_results_psychoed <- data.frame(beta = betas_to_test, power = NA, ci_lo = NA, ci_hi = NA)
+
+for (i in seq_along(betas_to_test)) {
+  b <- betas_to_test[i]
+  fixef(sim_model_psychoed)[int_term] <- b
+  
+  ps <- tryCatch(
+    powerSim(sim_model_psychoed, nsim = 1000, seed = 1, test = fixed(int_term, "sa")),
+    error = function(e) { message("Sim failed at beta=", b, ": ", e$message); NULL }
+  )
+  
+  if (!is.null(ps)) {
+    s <- summary(ps)
+    mdes_results_psychoed$power[i] <- s$mean
+    mdes_results_psychoed$ci_lo[i] <- s$lower
+    mdes_results_psychoed$ci_hi[i] <- s$upper
+  }
+}
+
+print(mdes_results_psychoed)
+
+# ----- Plot -----
+ggplot(mdes_results_psychoed, aes(x = beta, y = power)) +
+  geom_line() +
+  geom_point() +
+  geom_ribbon(aes(ymin = ci_lo, ymax = ci_hi), alpha = 0.15) +
+  geom_hline(yintercept = 0.80, linetype = "dashed", color = "red") +
+  scale_x_reverse() + # Reverses axis so beta goes from 0.10 -> 0.35
+  labs(x = "Standardized interaction coefficient (beta)",
+       y = "Estimated power",
+       title = "Sensitivity Curve: N = 200") +
+  theme_minimal()
+
+# ----- Interpolate MDES at 80% power -----
+clean_res <- na.omit(mdes_results_psychoed)
+fit80 <- approx(x = clean_res$power, y = clean_res$beta, xout = 0.80)
+cat("\n---> Approximate MDES at 80% power: beta =", round(fit80$y, 3), "\n")
+
+```

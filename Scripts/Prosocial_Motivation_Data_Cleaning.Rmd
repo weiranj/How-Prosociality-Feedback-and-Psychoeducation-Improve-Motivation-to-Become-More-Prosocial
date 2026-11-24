@@ -1,0 +1,969 @@
+---
+title: "Prosocial Motivation data cleaning"
+date: "2025-10-16"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    highlight: tango
+    number_sections: true
+    code_folding: show
+    theme: cosmo
+    self_contained: true
+output_dir: "."
+---
+# Set up and read files
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load packages
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(psych)
+library(DT)
+library(nlme)
+library(apaTables)
+
+# Clear work space
+rm(list = ls())
+
+# Set system language
+Sys.setenv(LANG = "en")
+
+# Read file
+task_filename <- "../Original data/Prosocial_Motivation_Raw_Data.csv"
+mot_raw <- read.csv(task_filename, header = TRUE)
+
+# Remove headers (rows 2 and 3)
+mot_raw <- mot_raw[-c(1, 2), ]
+
+# Delete unfinished responses
+mot_raw <- mot_raw[mot_raw$Finished != 0, ]
+
+# Convert columns to numeric
+mot_raw[] <- lapply(mot_raw, function(x) {
+  # Try converting to numeric
+  num <- suppressWarnings(as.numeric(as.character(x)))
+  # If conversion creates too many NAs, keep original
+  if (sum(is.na(num)) < length(num) / 3)
+    num
+  else
+    x
+})
+
+```
+
+# Change goals
+## Condition orders
+
+Participants were randomized into two conditions distinguished by the order in which they completed the two motivational interventions (Psychoeducation and Feedback). All participants completed both interventions and reported their motivation to become more prosocial after each intervention. 
+
+This block names the change goal variables based on the order of the psychoeducation and feedback conditions participants experienced.
+
+```{r orders}
+# The initial motivation response
+mot_raw <- mot_raw %>%
+  rename(change_goal_initial = Pro_change)
+
+# Motivation after feedback:
+mot_raw <- mot_raw %>%
+  rename(change_goal_post_feedback = Pro_change_feedback)
+
+# Motivation after psychoed:
+mot_raw <- mot_raw %>%
+  rename(change_goal_post_psychoed = Pro_change_reflect)
+
+# ----- Order of presenting the feedback and psychoed blocks -----
+# FL21: Feedback
+# FL20: psychoed
+# If FL21|FL20, feedback condition is presented first, feedback_first = 1, initial -> feedback -> psychoed
+# If FL20|FL21, relection condition is presented first,feedback_first = 0, initial -> psychoed -> feedback
+mot_raw$feedback_first <- as.integer(ifelse(mot_raw$FL_13_DO == "FL_21|FL_20", 1, 0))
+
+# ----- Motivation before psychoed -----
+# If feedback first = 0, then the initial motivation is the pre-psychoed motivation
+# If feedback first = 1, then the post feedback motivation is the pre-psychoed motivation
+mot_raw$change_goal_pre_psychoed <- ifelse(
+  mot_raw$feedback_first == 0,
+  mot_raw$change_goal_initial,
+  mot_raw$change_goal_post_feedback
+)
+
+# ----- Motivation before feedback -----
+# If feedback first = 0, then the post psychoed motivation is the pre-feedback motivation
+# If feedback first = 1, then the initial motivation is the pre-feedback motivation
+mot_raw$change_goal_pre_feedback <- ifelse(
+  mot_raw$feedback_first == 0,
+  mot_raw$change_goal_post_psychoed,
+  mot_raw$change_goal_initial
+)
+
+# ----- Final motivation -----
+# If feedback first = 0, then the post feedback motivation is the final motivation
+# If feedback first = 1, then the post psychoed motivation is the final motivation
+mot_raw$change_goal_final <- ifelse(
+  mot_raw$feedback_first == 0,
+  mot_raw$change_goal_post_feedback,
+  mot_raw$change_goal_post_psychoed
+)
+
+```
+
+
+## Prosocial trait change goals
+
+```{r prosocial trait change goals}
+# Rename prosocial trait change goals
+mot_raw <- mot_raw %>%
+  rename(
+    honest_change_goal = Pro_adj_changes_1,
+    humble_change_goal = Pro_adj_changes_2,
+    selfless_change_goal = Pro_adj_changes_3,
+    caring_change_goal = Pro_adj_changes_4,
+    moral_change_goal = Pro_adj_changes_5,
+    altruistic_change_goal = Pro_adj_changes_6,
+    helpful_change_goal = Pro_adj_changes_7,
+    generous_change_goal = Pro_adj_changes_8,
+    empathetic_change_goal = Pro_adj_changes_9,
+    compassionate_change_goal = Pro_adj_changes_10,
+    kind_change_goal = Pro_adj_changes_11,
+    considerate_change_goal = Pro_adj_changes_12,
+    cooperative_change_goal = Pro_adj_changes_13,
+  )
+
+```
+
+## Center change goals
+
+```{r center change goals}
+#---------------------------------
+# Center the change goal variables so 0 = no change
+#---------------------------------
+# Variables to center
+vars_to_center <- c(
+  # Prosociality change goals
+  "change_goal_initial",
+  "change_goal_pre_psychoed",
+  "change_goal_post_psychoed",
+  "change_goal_pre_feedback",
+  "change_goal_post_feedback",
+  "change_goal_final",
+  
+  # Prosocial trait change goals
+  "honest_change_goal",
+  "humble_change_goal",
+  "selfless_change_goal",
+  "caring_change_goal",
+  "moral_change_goal",
+  "altruistic_change_goal",
+  "helpful_change_goal",
+  "generous_change_goal",
+  "empathetic_change_goal",
+  "compassionate_change_goal",
+  "kind_change_goal",
+  "considerate_change_goal",
+  "cooperative_change_goal"
+)
+
+# Center the change goal vars (range 1-7, with 4 being the midpoint)
+mot_raw[vars_to_center] <- lapply(mot_raw[vars_to_center], function(x)
+  x - 4)
+
+```
+
+# Demographics
+
+```{r demographics}
+# ----- Gender -----
+mot_raw$gender <- factor(
+  mot_raw$gender,
+  levels = c(1, 2, 3, 4),
+  labels = c ("Female", "Male", "Nonbinary", "Not listed")
+)
+
+# ----- Race -----
+mot_raw$race = case_when(
+  mot_raw$race == 1      ~ "Hispanic",
+  mot_raw$race == 2      ~ "White",
+  mot_raw$race == 3      ~ "Black",
+  mot_raw$race == 4      ~ "American Indian",
+  mot_raw$race == 5      ~ "Asian",
+  mot_raw$race == 6      ~ "Native Hawaiian",
+  mot_raw$race == 7      ~ "Not listed",
+  TRUE                 ~ "multiple"
+)
+
+mot_raw$race <- factor(
+  mot_raw$race,
+  levels = c(
+    "Hispanic",
+    "White",
+    "Black",
+    "American Indian",
+    "Asian",
+    "Native Hawaiian",
+    "Not listed",
+    "multiple"
+  )
+)
+
+# ----- Income -----
+mot_raw$income_categorical = case_when(
+  mot_raw$income == 1      ~ "Under $5,000",
+  mot_raw$income == 2      ~ "$5,000 - 9,999",
+  mot_raw$income == 3      ~ "$10,000 - 14,999",
+  mot_raw$income == 4      ~ "$15,000 - 24,999",
+  mot_raw$income == 5      ~ "$25,000 - 39,999",
+  mot_raw$income == 6      ~ "$40,000 - 59,999",
+  mot_raw$income == 7      ~ "$60,000 - 89,999",
+  mot_raw$income == 8      ~ "$90,000 - 179,999",
+  mot_raw$income == 9      ~ "Over $180,000",
+  mot_raw$income == 10     ~ "don't know"
+)
+
+mot_raw$income_categorical <- factor(
+  mot_raw$income_categorical,
+  levels = c(
+    "Under $5,000",
+    "$5,000 - 9,999",
+    "$10,000 - 14,999",
+    "$15,000 - 24,999",
+    "$25,000 - 39,999",
+    "$40,000 - 59,999",
+    "$60,000 - 89,999",
+    "$90,000 - 179,999",
+    "Over $180,000",
+    "don't know"
+  )
+)
+
+# If participant answered "don't know", then code income as NA
+mot_raw$income[mot_raw$income == 10] <- NA
+
+```
+
+# Prosociality
+## HEXACO
+```{r prosocial scores}
+# ----- Honesty-humility -----
+prosociality_items <- c(
+  "HEX_6",
+  "HEX_30r",
+  "HEX_54",
+  "HEX_12r",
+  "HEX_36",
+  "HEX_60r",
+  "HEX_18",
+  "HEX_42r",
+  "HEX_24r",
+  "HEX_48r"
+)
+
+# HH_score - prosociality score calculated in Qualtrics
+mot_raw$prosociality <- rowMeans(mot_raw[, prosociality_items], na.rm = TRUE)
+# HH cronbach's alpha
+alpha_prosociality <- psych::alpha(mot_raw[prosociality_items])
+alpha_prosociality$total$raw_alpha
+# Subscales
+mot_raw$prosociality_sincerity <- rowMeans(mot_raw[, c("HEX_6", "HEX_30r", "HEX_54")], na.rm = TRUE)
+mot_raw$prosociality_fairness <- rowMeans(mot_raw[, c("HEX_12r", "HEX_36", "HEX_60r")], na.rm = TRUE)
+mot_raw$prosociality_greed_avoidance <- rowMeans(mot_raw[, c("HEX_18", "HEX_42r")], na.rm = TRUE)
+mot_raw$prosociality_modesty <- rowMeans(mot_raw[, c("HEX_24r", "HEX_48r")], na.rm = TRUE)
+
+```
+
+## TriPM
+
+```{r TriPM}
+# There was an error when we programmed Qualtrics, so we need to recode TriPM_26
+mot_raw$TriPM_26[mot_raw$TriPM_26 == 4] <- 0
+
+# ----------------------------------------
+# Subscales
+# ----------------------------------------
+meanness_items <- c('TriPM_6', 'TriPM_8', 'TriPM_14', 'TriPM_17', 'TriPM_20', 'TriPM_23',
+                    'TriPM_26', 'TriPM_29', 'TriPM_36', 'TriPM_40', 'TriPM_42', 'TriPM_45',
+                    'TriPM_48', 'TriPM_55', 'TriPM_2r', 'TriPM_11r', 'TriPM_33r',
+                    'TriPM_39r', 'TriPM_52r')
+disinhibition_items <- c('TriPM_3', 'TriPM_5', 'TriPM_9', 'TriPM_12', 'TriPM_15', 'TriPM_18',
+                         'TriPM_24', 'TriPM_27', 'TriPM_31', 'TriPM_34', 'TriPM_37',
+                         'TriPM_43', 'TriPM_46', 'TriPM_49', 'TriPM_51', 'TriPM_53',
+                         'TriPM_56', 'TriPM_58', 'TriPM_21r', 'TriPM_30r')
+boldness_items <- c('TriPM_1', 'TriPM_7', 'TriPM_13', 'TriPM_19', 'TriPM_22', 'TriPM_28',
+                     'TriPM_32', 'TriPM_38', 'TriPM_54', 'TriPM_4r', 'TriPM_10r',
+                     'TriPM_16r', 'TriPM_25r', 'TriPM_35r', 'TriPM_41r', 'TriPM_44r',
+                     'TriPM_47r', 'TriPM_50r', 'TriPM_57r')
+TriPM_total_items <- c(meanness_items, disinhibition_items, boldness_items)
+
+# ----------------------------------------
+# Scores
+# ----------------------------------------
+# Meanness
+mot_raw$TriPM_meanness <- rowSums(mot_raw[, meanness_items], na.rm = TRUE)
+# Disinhibition
+mot_raw$TriPM_disinhibition <- rowSums(mot_raw[, disinhibition_items], na.rm = TRUE)
+# Boldness
+mot_raw$TriPM_boldness <- rowSums(mot_raw[, boldness_items], na.rm = TRUE)
+
+# Total score
+mot_raw$TriPM_total <- rowSums(mot_raw[, c("TriPM_meanness", "TriPM_disinhibition", "TriPM_boldness")], na.rm = TRUE)
+
+# ----------------------------------------
+# Cronbach's alpha
+# ----------------------------------------
+# Total
+alpha_TriPM_total <- psych::alpha(mot_raw[TriPM_total_items])
+alpha_TriPM_total$total$raw_alpha
+
+# Meanness
+alpha_meanness <- psych::alpha(mot_raw[meanness_items])
+alpha_meanness$total$raw_alpha
+# Disinhibition
+alpha_disinhibition <- psych::alpha(mot_raw[disinhibition_items])
+alpha_disinhibition$total$raw_alpha
+# Boldness
+alpha_boldness <- psych::alpha(mot_raw[boldness_items])
+alpha_boldness$total$raw_alpha
+
+```
+
+## SDT - short form
+```{r SDT}
+#---------------------------------
+# AUC
+#---------------------------------
+mot_raw$AUC <- as.numeric(mot_raw$SD1)+ ### 0-1
+  ( ((as.numeric(mot_raw$SD1) + as.numeric(mot_raw$SD2) ))/2)+ ###1-2
+  ( ((as.numeric(mot_raw$SD2) + as.numeric(mot_raw$SD5) ))*(3/2))+ ###2-5
+  ( ((as.numeric(mot_raw$SD5) + as.numeric(mot_raw$SD10) ))*(5/2))+###5-10
+  ( ((as.numeric(mot_raw$SD10) + as.numeric(mot_raw$SD20) ))*(10/2))+###10-20
+  ( ((as.numeric(mot_raw$SD20) + as.numeric(mot_raw$SD50) ))*(30/2))+##20-50
+  ( ((as.numeric(mot_raw$SD50) + as.numeric(mot_raw$SD100) ))*(50/2))##50-100
+
+# Make AUC a range from 0 to 1
+mot_raw$AUC <-mot_raw$AUC / 1000
+
+#---------------------------------
+# Prep
+#---------------------------------
+# Rename cols
+mot_raw <- mot_raw %>%
+  rename(
+    "1"   = "SD1",
+    "2"   = "SD2",
+    "5"   = "SD5",
+    "10"  = "SD10",
+    "20"  = "SD20",
+    "50"  = "SD50",
+    "100" = "SD100"
+  )
+
+# Create a dataframe with social discounting response and participant IDs only
+mot_SD <- mot_raw[, c(
+  "participantId",
+  "TriPM_total",
+  "prosociality",
+  "TriPM_meanness",
+  "TriPM_boldness",
+  "TriPM_disinhibition",
+  "1",
+  "2",
+  "5",
+  "10",
+  "20",
+  "50",
+  "100"
+)]
+
+# Convert into long format
+data_long_sdtsf <- gather(mot_SD, socialdistance, amount, "1":"100", factor_key =
+                            FALSE)
+
+# Convert into numeric values
+data_long_sdtsf$amount <- as.numeric(data_long_sdtsf$amount)
+data_long_sdtsf$socialdistance <- as.numeric(data_long_sdtsf$socialdistance)
+
+#---------------------------------
+# Model Comparison - Exponential has the best fit
+#---------------------------------
+# Hyperbolic model
+hyperbolic_model <- nlme(
+  amount ~ v0 / (1 + exp(logk) * socialdistance),
+  fixed = list(v0 ~ 1, logk ~ 1),
+  random = v0 + logk ~ 1 | participantId,
+  data = data_long_sdtsf,
+  start = c(v0 = 1.6, logk = -2),
+  control = c(nlmeControl(tol = .1, msMaxIter = 5000)),
+  na.action = na.omit
+)
+summary(hyperbolic_model)
+
+# Exponential model
+exponential_model <- nlme(
+  amount ~ v0 * exp(-k * socialdistance),
+  fixed = list(v0 ~ 1, k ~ 1),
+  random = v0 + k ~ 1 | participantId,
+  data = data_long_sdtsf,
+  start = c(v0 = 7, k = 1.5),
+  control = c(nlmeControl(tol = .1, msMaxIter = 1000)),
+  na.action = na.omit
+)
+summary(exponential_model)
+
+# Linear model
+linear <- nlme(
+  as.numeric(amount) ~ v0 + k * socialdistance,
+  fixed = list(v0 ~ 1, k ~ 1),
+  random = v0 + k ~ 1 | participantId,
+  data = data_long_sdtsf,
+  start = c(v0 = 6, k = -0.6),
+  control = nlmeControl(tol = 0.1, msMaxIter = 100000),
+  na.action = na.omit
+)
+summary(linear)
+
+# Compare their AIC, the exponential model has the lowest AIC
+AIC(hyperbolic_model)
+AIC(exponential_model)
+AIC(linear)
+
+#---------------------------------
+# Hyperbolic model - logk (for comparison)
+#---------------------------------
+# Extract the estimated v0 and logk for each individual
+ranefs_hyper <- random.effects(hyperbolic_model)
+
+# Get fixed effects
+fixed <- fixef(hyperbolic_model)
+
+# Add fixed effect to each individual's random effect
+individual_estimates_hyper <- ranefs_hyper
+individual_estimates_hyper$v0_estimate <- fixed["v0"] + ranefs_hyper$v0
+individual_estimates_hyper$logk_estimate <- fixed["logk"] + ranefs_hyper$logk
+
+# Add ID as a column
+individual_estimates_hyper$participantId <- rownames(individual_estimates_hyper)
+
+# Reorder columns
+individual_estimates_hyper <- individual_estimates_hyper[, c("participantId", "v0_estimate", "logk_estimate")]
+head(individual_estimates_hyper)
+
+# Add comment: do not use for analysis - for comparison only
+individual_estimates_hyper <- individual_estimates_hyper %>%
+  rename(
+    v0_hyperbolic_xuse   = v0_estimate,
+    logk_hyperbolic_xuse = logk_estimate
+  )
+
+# Add to original dataset
+mot_raw <- merge(mot_raw, unclass(individual_estimates_hyper), by = "participantId")
+
+#---------------------------------
+# Exponential model - k as discounting rate
+#---------------------------------
+# Extract random effects from the exponential model
+ranefs_exp <- random.effects(exponential_model)  # or ranef(exponential_model)
+
+# Get fixed effects
+fixed_exp <- fixef(exponential_model)
+
+# Add fixed effects to each individual's random effects
+individual_estimates_exp <- ranefs_exp
+individual_estimates_exp$v0_estimate <- fixed_exp["v0"] + ranefs_exp$v0
+individual_estimates_exp$k_estimate  <- fixed_exp["k"]  + ranefs_exp$k
+
+# Add ID as a column
+individual_estimates_exp$participantId <- rownames(individual_estimates_exp)
+
+# Reorder columns
+individual_estimates_exp <- individual_estimates_exp[, c("participantId", "v0_estimate", "k_estimate")]
+head(individual_estimates_exp)
+
+# Rename variables
+individual_estimates_exp <- individual_estimates_exp %>%
+  rename(
+    v0_exponential = v0_estimate,
+    k_exponential  = k_estimate
+  )
+
+# Merge back to the original dataset
+mot_raw <- merge(mot_raw, unclass(individual_estimates_exp), by = "participantId")
+
+```
+
+## SDT - short form: Graphs
+
+```{r sdt - high and low psychopathy}
+#---------------------------------
+# Discounting graph - Full Sample (generated with raw data)
+#---------------------------------
+filtered_data_long_sdtsf_ggplot <- data_long_sdtsf %>% 
+  group_by(socialdistance) %>% 
+  summarise(mean_amount=mean(as.numeric(amount)),
+            ste=sd(amount)/sqrt(length(amount)))%>% 
+  ungroup()
+
+ggplot(filtered_data_long_sdtsf_ggplot, aes(x = socialdistance, y = mean_amount)) +
+  geom_line(linewidth = 2) +  
+  geom_ribbon(
+    aes(
+      ymin = mean_amount - ste,
+      ymax = mean_amount + ste
+    ),
+    alpha = 0.4,
+    color = NA
+  ) +
+  labs(
+    title = "Social Discounting with Standard Error",
+    x = "Social Distance",
+    y = "$ Willing to Forgo",
+    fill = "Group"
+  ) +
+  theme(
+    axis.title.x = element_text(size = 20, face = "bold", margin = margin(t = 20)),
+    axis.title.y = element_text(size = 20, face = "bold", margin = margin(r = 20)),
+    axis.text.x  = element_text(size = 15),
+    axis.text.y  = element_text(size = 15),
+    axis.line    = element_line(),
+    panel.grid.major  = element_blank(),
+    panel.grid.minor  = element_blank(),
+    panel.background  = element_rect(fill = "white", color = "black"),
+    plot.background   = element_rect(fill = "white"),
+    legend.text  = element_text(size = 15),
+    legend.title = element_text(size = 15, face = "bold"),
+    legend.justification = c(1, -0.05),
+    legend.position      = c(0.9, 0.6),
+    legend.background    = element_rect(fill = "white")
+  )
+
+#---------------------------------
+# Discounting graph - high vs mid vs low TriPM
+#---------------------------------
+# Create TriPM groups (Low / Mid / High) using tertiles
+TriPM_mean <- mean(mot_raw$TriPM_total, na.rm = TRUE)
+TriPM_sd   <- sd(mot_raw$TriPM_total, na.rm = TRUE)
+
+data_long_sdtsf_TriPM <- data_long_sdtsf %>%
+  mutate(
+    TriPM_group = case_when(
+      TriPM_total <= (TriPM_mean - TriPM_sd) ~ "Low TriPM",
+      TriPM_total >= (TriPM_mean + TriPM_sd) ~ "High TriPM",
+      TRUE                                   ~ "Mid TriPM"
+    ),
+    TriPM_group = factor(TriPM_group,
+                         levels = c("Low TriPM", "Mid TriPM", "High TriPM"))
+  )
+
+# Summarize by social distance and TriPM group
+filtered_data_long_sdtsf_ggplot_triPM <- data_long_sdtsf_TriPM %>%
+  group_by(TriPM_group, socialdistance) %>%
+  summarise(
+    mean_amount = mean(as.numeric(amount), na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Plot three discounting curves
+ggplot(filtered_data_long_sdtsf_ggplot_triPM,
+       aes(x = socialdistance, y = mean_amount, color = TriPM_group)) +
+  geom_line(linewidth = 2) +
+  labs(
+    title = "Social Discounting by TriPM Group",
+    x = "Social Distance",
+    y = "$ Willing to Forgo",
+    color = "TriPM Group"
+  ) +
+  theme(
+    axis.title.x = element_text(size = 20, face = "bold", margin = margin(t = 20)),
+    axis.title.y = element_text(size = 20, face = "bold", margin = margin(r = 20)),
+    axis.text.x  = element_text(size = 15),
+    axis.text.y  = element_text(size = 15),
+    axis.line    = element_line(),
+    panel.grid.major  = element_blank(),
+    panel.grid.minor  = element_blank(),
+    panel.background  = element_rect(fill = "white", color = "black"),
+    plot.background   = element_rect(fill = "white"),
+    legend.text  = element_text(size = 15),
+    legend.title = element_text(size = 15, face = "bold"),
+    legend.justification = c(1, -0.05),
+    legend.position      = c(0.9, 0.6),
+    legend.background    = element_rect(fill = "white")
+  )
+
+#---------------------------------
+# Discounting graph - high vs mid vs low TriPM meanness
+#---------------------------------
+# Create TriPM meanness groups (Low / Mid / High) using mean ± SD thresholds
+TriPM_meanness_mean <- mean(mot_raw$TriPM_meanness, na.rm = TRUE)
+TriPM_meanness_sd   <- sd(mot_raw$TriPM_meanness, na.rm = TRUE)
+
+data_long_sdtsf_meanness <- data_long_sdtsf %>%
+  mutate(
+    TriPM_meanness_group = case_when(
+      TriPM_meanness <= (TriPM_meanness_mean - TriPM_meanness_sd) ~ "Low Meanness",
+      TriPM_meanness >= (TriPM_meanness_mean + TriPM_meanness_sd) ~ "High Meanness",
+      TRUE                                                       ~ "Mid Meanness"
+    ),
+    TriPM_meanness_group = factor(
+      TriPM_meanness_group,
+      levels = c("Low Meanness", "Mid Meanness", "High Meanness")
+    )
+  )
+
+# Summarise by social distance and TriPM meanness group
+filtered_data_long_sdtsf_ggplot_meanness <- data_long_sdtsf_meanness %>%
+  group_by(TriPM_meanness_group, socialdistance) %>%
+  summarise(
+    mean_amount = mean(as.numeric(amount), na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Plot three discounting curves
+ggplot(filtered_data_long_sdtsf_ggplot_meanness,
+       aes(x = socialdistance, y = mean_amount, color = TriPM_meanness_group)) +
+  geom_line(linewidth = 2) +
+  labs(
+    title = "Social Discounting by TriPM Meanness Group",
+    x = "Social Distance",
+    y = "$ Willing to Forgo",
+    color = "TriPM Meanness Group"
+  ) +
+  theme(
+    axis.title.x = element_text(size = 20, face = "bold", margin = margin(t = 20)),
+    axis.title.y = element_text(size = 20, face = "bold", margin = margin(r = 20)),
+    axis.text.x  = element_text(size = 15),
+    axis.text.y  = element_text(size = 15),
+    axis.line    = element_line(),
+    panel.grid.major  = element_blank(),
+    panel.grid.minor  = element_blank(),
+    panel.background  = element_rect(fill = "white", color = "black"),
+    plot.background   = element_rect(fill = "white"),
+    legend.text  = element_text(size = 15),
+    legend.title = element_text(size = 15, face = "bold"),
+    legend.justification = c(1, -0.05),
+    legend.position      = c(0.9, 0.6),
+    legend.background    = element_rect(fill = "white")
+  )
+
+#---------------------------------
+# Discounting graph - high vs mid vs low TriPM boldness
+#---------------------------------
+# Create TriPM boldness groups (Low / Mid / High) using mean ± SD thresholds
+TriPM_boldness_mean <- mean(mot_raw$TriPM_boldness, na.rm = TRUE)
+TriPM_boldness_sd   <- sd(mot_raw$TriPM_boldness, na.rm = TRUE)
+
+data_long_sdtsf_boldness <- data_long_sdtsf %>%
+  mutate(
+    TriPM_boldness_group = case_when(
+      TriPM_boldness <= (TriPM_boldness_mean - TriPM_boldness_sd) ~ "Low Boldness",
+      TriPM_boldness >= (TriPM_boldness_mean + TriPM_boldness_sd) ~ "High Boldness",
+      TRUE                                                       ~ "Mid Boldness"
+    ),
+    TriPM_boldness_group = factor(
+      TriPM_boldness_group,
+      levels = c("Low Boldness", "Mid Boldness", "High Boldness")
+    )
+  )
+
+# Summarise by social distance and TriPM boldness group
+filtered_data_long_sdtsf_ggplot_boldness <- data_long_sdtsf_boldness %>%
+  group_by(TriPM_boldness_group, socialdistance) %>%
+  summarise(
+    mean_amount = mean(as.numeric(amount), na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Plot three discounting curves
+ggplot(filtered_data_long_sdtsf_ggplot_boldness,
+       aes(x = socialdistance, y = mean_amount, color = TriPM_boldness_group)) +
+  geom_line(linewidth = 2) +
+  labs(
+    title = "Social Discounting by TriPM Boldness Group",
+    x = "Social Distance",
+    y = "$ Willing to Forgo",
+    color = "TriPM Boldness Group"
+  ) +
+  theme(
+    axis.title.x = element_text(size = 20, face = "bold", margin = margin(t = 20)),
+    axis.title.y = element_text(size = 20, face = "bold", margin = margin(r = 20)),
+    axis.text.x  = element_text(size = 15),
+    axis.text.y  = element_text(size = 15),
+    axis.line    = element_line(),
+    panel.grid.major  = element_blank(),
+    panel.grid.minor  = element_blank(),
+    panel.background  = element_rect(fill = "white", color = "black"),
+    plot.background   = element_rect(fill = "white"),
+    legend.text  = element_text(size = 15),
+    legend.title = element_text(size = 15, face = "bold"),
+    legend.justification = c(1, -0.05),
+    legend.position      = c(0.9, 0.6),
+    legend.background    = element_rect(fill = "white")
+  )
+
+#---------------------------------
+# Discounting graph - high vs mid vs low TriPM disinhibition
+#---------------------------------
+# Create TriPM disinhibition groups (Low / Mid / High) using mean ± SD thresholds
+TriPM_disinhibition_mean <- mean(mot_raw$TriPM_disinhibition, na.rm = TRUE)
+TriPM_disinhibition_sd   <- sd(mot_raw$TriPM_disinhibition, na.rm = TRUE)
+
+data_long_sdtsf_disinhibition <- data_long_sdtsf %>%
+  mutate(
+    TriPM_disinhibition_group = case_when(
+      TriPM_disinhibition <= (TriPM_disinhibition_mean - TriPM_disinhibition_sd) ~ "Low Disinhibition",
+      TriPM_disinhibition >= (TriPM_disinhibition_mean + TriPM_disinhibition_sd) ~ "High Disinhibition",
+      TRUE                                                                      ~ "Mid Disinhibition"
+    ),
+    TriPM_disinhibition_group = factor(
+      TriPM_disinhibition_group,
+      levels = c("Low Disinhibition", "Mid Disinhibition", "High Disinhibition")
+    )
+  )
+
+# Summarise by social distance and TriPM disinhibition group
+filtered_data_long_sdtsf_ggplot_disinhibition <- data_long_sdtsf_disinhibition %>%
+  group_by(TriPM_disinhibition_group, socialdistance) %>%
+  summarise(
+    mean_amount = mean(as.numeric(amount), na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Plot three discounting curves
+ggplot(filtered_data_long_sdtsf_ggplot_disinhibition,
+       aes(x = socialdistance, y = mean_amount, color = TriPM_disinhibition_group)) +
+  geom_line(linewidth = 2) +
+  labs(
+    title = "Social Discounting by TriPM Disinhibition Group",
+    x = "Social Distance",
+    y = "$ Willing to Forgo",
+    color = "TriPM Disinhibition Group"
+  ) +
+  theme(
+    axis.title.x = element_text(size = 20, face = "bold", margin = margin(t = 20)),
+    axis.title.y = element_text(size = 20, face = "bold", margin = margin(r = 20)),
+    axis.text.x  = element_text(size = 15),
+    axis.text.y  = element_text(size = 15),
+    axis.line    = element_line(),
+    panel.grid.major  = element_blank(),
+    panel.grid.minor  = element_blank(),
+    panel.background  = element_rect(fill = "white", color = "black"),
+    plot.background   = element_rect(fill = "white"),
+    legend.text  = element_text(size = 15),
+    legend.title = element_text(size = 15, face = "bold"),
+    legend.justification = c(1, -0.05),
+    legend.position      = c(0.9, 0.6),
+    legend.background    = element_rect(fill = "white")
+  )
+
+#---------------------------------
+# Discounting graph - high vs mid vs low prosociality
+#---------------------------------
+# Create prosociality groups (Low / Mid / High) using mean ± SD thresholds
+prosociality_mean <- mean(mot_raw$prosociality, na.rm = TRUE)
+prosociality_sd   <- sd(mot_raw$prosociality, na.rm = TRUE)
+
+data_long_sdtsf_prosociality <- data_long_sdtsf %>%
+  mutate(
+    prosociality_group = case_when(
+      prosociality <= (prosociality_mean - prosociality_sd) ~ "Low prosociality",
+      prosociality >= (prosociality_mean + prosociality_sd) ~ "High prosociality",
+      TRUE                                                  ~ "Mid prosociality"
+    ),
+    prosociality_group = factor(prosociality_group,
+                                levels = c("Low prosociality", "Mid prosociality", "High prosociality"))
+  )
+
+# Summarise by social distance and prosociality group
+filtered_data_long_sdtsf_ggplot_prosociality <- data_long_sdtsf_prosociality %>%
+  group_by(prosociality_group, socialdistance) %>%
+  summarise(
+    mean_amount = mean(as.numeric(amount), na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Plot three discounting curves
+ggplot(filtered_data_long_sdtsf_ggplot_prosociality,
+       aes(x = socialdistance, y = mean_amount, color = prosociality_group)) +
+  geom_line(linewidth = 2) +
+  labs(
+    title = "Social Discounting by Prosociality Group",
+    x = "Social Distance",
+    y = "$ Willing to Forgo",
+    color = "Prosociality Group"
+  ) +
+  theme(
+    axis.title.x = element_text(size = 20, face = "bold", margin = margin(t = 20)),
+    axis.title.y = element_text(size = 20, face = "bold", margin = margin(r = 20)),
+    axis.text.x  = element_text(size = 15),
+    axis.text.y  = element_text(size = 15),
+    axis.line    = element_line(),
+    panel.grid.major  = element_blank(),
+    panel.grid.minor  = element_blank(),
+    panel.background  = element_rect(fill = "white", color = "black"),
+    plot.background   = element_rect(fill = "white"),
+    legend.text  = element_text(size = 15),
+    legend.title = element_text(size = 15, face = "bold"),
+    legend.justification = c(1, -0.05),
+    legend.position      = c(0.9, 0.6),
+    legend.background    = element_rect(fill = "white")
+  )
+
+```
+
+## SDT - hyperbolic vs exponential 
+
+```{r exponential vs hyperbolic}
+# Variables of interest
+var_cols <- c(
+  "AUC",
+  "k_exponential"
+)
+
+```
+
+# Prosocial construal change goals
+
+```{r adj}
+# Compile questions related to prosocial motivation into a dataframe called motivation
+motivation <- c(
+  "Mot_wellbeing",
+  "Mot_stress",
+  "Mot_religion",
+  "Mot_moral",
+  "Mot_emotion",
+  "Mot_meaning",
+  "Mot_health",
+  "Mot_reputation",
+  "Mot_connection",
+  "Mot_better_friends",
+  "Mot_job",
+  "Mot_contagion",
+  "Mot_romantic",
+  "Mot_norm",
+  "Pro_score_reaction"
+)
+
+```
+
+# Generate output file
+
+```{r output data frame creation}
+# Create an output file named mot_clean that contains the essential mot_raw variables
+mot_clean <- mot_raw[, c(
+  #---------------------------------
+  # Meta data
+  #---------------------------------
+  "participantId",
+  "StartDate",
+  "EndDate",
+  "feedback_first",
+  
+  #---------------------------------
+  # Change goals
+  #---------------------------------
+  # Prosociality change goals
+  "change_goal_initial",
+  "change_goal_pre_psychoed",
+  "change_goal_post_psychoed",
+  "change_goal_pre_feedback",
+  "change_goal_post_feedback",
+  "change_goal_final",
+  
+  # Prosocial trait change goals
+  "honest_change_goal",
+  "humble_change_goal",
+  "selfless_change_goal",
+  "caring_change_goal",
+  "moral_change_goal",
+  "altruistic_change_goal",
+  "helpful_change_goal",
+  "generous_change_goal",
+  "empathetic_change_goal",
+  "compassionate_change_goal",
+  "kind_change_goal",
+  "considerate_change_goal",
+  "cooperative_change_goal",
+  
+  #---------------------------------
+  # Personaltiy and Prosociality
+  #---------------------------------
+  # Personality
+  "prosociality",
+
+  "prosociality_sincerity",
+  "prosociality_fairness",
+  "prosociality_greed_avoidance",
+  "prosociality_modesty",
+  
+  # TriPM
+  "TriPM_meanness",
+  "TriPM_disinhibition",
+  "TriPM_boldness",
+  "TriPM_total",
+  
+  # SDT
+  "AUC",
+  "v0_exponential",
+  "k_exponential",
+
+  #---------------------------------
+  # Motivators
+  #---------------------------------
+  # Effectiveness of motivators
+  "Mot_wellbeing",
+  "Mot_stress",
+  "Mot_religion",
+  "Mot_moral",
+  "Mot_emotion",
+  "Mot_meaning",
+  "Mot_health",
+  "Mot_reputation",
+  "Mot_connection",
+  "Mot_better_friends",
+  "Mot_job",
+  "Mot_contagion",
+  "Mot_romantic",
+  "Mot_norm",
+  "Mot_other",
+  "Mot_other_binary_1_TEXT",
+  "Pro_score_reaction",
+
+  #---------------------------------
+  # Control Variables
+  #---------------------------------
+  # Demographics
+  "age",
+  "gender",
+  "gender_4_TEXT",
+  "race",
+  "race_7_TEXT",
+  "income",
+  "income_categorical",
+  "education",
+  "employment",
+  "religion"
+)]
+
+# Rename variables
+mot_clean <- mot_clean %>%
+  rename(
+    participant_id              = participantId,
+    Mot_other_text              = Mot_other_binary_1_TEXT,
+    gender_text                 = gender_4_TEXT,
+    race_text                   = race_7_TEXT
+  )
+
+```
+
+
+```{r}
+# Write csv
+write.csv(
+  mot_clean,
+  file = "../Cleaned data/Prosocial_motivation_cleaned_data.csv",
+  row.names = FALSE
+)
+
+```

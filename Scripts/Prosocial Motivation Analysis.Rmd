@@ -1,0 +1,1292 @@
+---
+title: "Prosocial Motivation Analysis"
+date: "2025-12-09"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    highlight: tango
+    number_sections: true
+    code_folding: show
+    theme: cosmo
+    self_contained: true
+output_dir: "."
+---
+
+# Set up
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load packages
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(psych)
+library(DT)
+library(tidyverse)
+library(styler)
+library(moments)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(pbkrtest)
+library(effectsize)
+library(apaTables)
+library(interactions)
+library(visreg)
+library(gtsummary)
+library(sjPlot)
+library(patchwork)
+library(simr)
+library(car)
+
+# Clear work space
+rm(list = ls())
+
+# Set system language
+Sys.setenv(LANG = "en")
+
+# Read file
+task_filename <- "../Cleaned data/Prosocial_motivation_cleaned_data.csv"
+mot_clean <- read.csv(task_filename, header = TRUE)
+
+```
+
+## Create Functions
+
+Create functions to support other analysis.
+
+linear_regression_results_table: Function to run a series of linear models and return a summary table
+
+get_summary_with_CI: Creating a summary table of the variable's Mean, SD, N, and CI
+
+get_one_sample_results: Create a table with the t-test results of each variables against mu = 0
+
+get_cont_descriptives: Summarize the continuous variables
+
+```{r function}
+#---------------------------------
+# Function to run a series of linear models and return a summary table
+#---------------------------------
+# Inputs:
+# 1. predictors: character vector of predictor variable names
+# 2. outcome: character vector of outcome variable names (1 or more)
+# Output: a summary table of the key parameters of the models
+linear_regression_results_table <- function(predictors, outcomes, data = mot_clean) {
+  # Fixed controls variables across models
+  controls <- c("age", "gender", "income")
+  
+  # Loop over all outcome × predictor combinations
+  results_list <- lapply(outcomes, function(y) {
+    lapply(predictors, function(var) {
+      # Build formula: outcome ~ predictor + controls
+      formula_str <- paste(y, "~", paste(c(var, controls), collapse = " + "))
+      f <- as.formula(formula_str)
+      
+      # Fit model
+      fit <- lm(f, data = data)
+      
+      # Parameters
+      s   <- summary(fit)
+      coefs <- coef(s)
+      est  <- coefs[var, "Estimate"]
+      se   <- coefs[var, "Std. Error"]
+      tval <- coefs[var, "t value"]
+      pval <- coefs[var, "Pr(>|t|)"]
+      
+      # Effect size: semi-partial R^2 (ΔR^2)
+      fit_reduced <- update(fit, paste(". ~ . -", var))
+      semi_partial_r2 <- s$r.squared -
+        summary(fit_reduced)$r.squared
+      
+      n <- nrow(model.frame(fit))
+      
+      # Create a df with descriptions and model parameters
+      data.frame(
+        outcome   = y,
+        predictor = var,
+        estimate  = est,
+        std_error = se,
+        t_value   = tval,
+        p_value   = pval,
+        semi_partial_r2  = semi_partial_r2,
+        r_squared = s$r.squared,
+        adj_r2    = s$adj.r.squared,
+        stringsAsFactors = FALSE
+      )
+    })
+  })
+  
+  # Turn the outcomes × predictors parameters into one df
+  results <- do.call(rbind, lapply(results_list, function(x)
+    do.call(rbind, x)))
+  
+  # Round the other numeric columns to 2 digits
+  num_cols <- c("estimate",
+                "std_error",
+                "t_value",
+                "semi_partial_r2",
+                "r_squared",
+                "adj_r2")
+  results[num_cols] <- lapply(results[num_cols], function(x)
+    round(x, 2))
+  
+  # Return the results df
+  return(results)
+}
+
+#---------------------------------
+# Functions to create descriptive visualization dot plots
+#---------------------------------
+# ----- Prepare the data: get_summary_with_CI function -----
+# Creating a summary table of the variable's Mean, SD, N, and CI
+# Input: var_names (a list of names of the interested variables)
+# Output: var_summary (a summary table of the variables' mean, sd, n, and CI)
+get_summary_with_CI <- function(var_names) {
+  # Reshape mot_clean to long format
+  var_long <- mot_clean %>%
+    # Select only the needed variables
+    dplyr::select(all_of(var_names)) %>%
+    # Transform into long format
+    pivot_longer(cols = everything(),
+                 names_to = "variable_name",
+                 values_to = "rating")
+  
+  # Calculate Mean, SD, N, and CI
+  var_summary <- Rmisc::summarySE(
+    var_long,
+    measurevar = "rating",
+    groupvars = "variable_name",
+    na.rm = TRUE
+  )
+  
+  # Reorder variable_name based on the mean rating
+  var_summary <- var_summary %>%
+    mutate(variable_name = fct_reorder(variable_name, rating))
+  
+  # Return the summary table
+  return(var_summary)
+}
+
+# ----- t-test results table -----
+# Create a table with the t-test results of each variables against mu = 0
+# Input: A vector of variable names
+# Output: t-test results table
+get_one_sample_results <- function(var_names) {
+  # For each variable name, create a row of results
+  one_sample_results <- map_df(var_names, function(var_name) {
+    data_vec <- mot_clean[[var_name]]
+    data_vec <- data_vec[!is.na(data_vec)]
+    # Run One-Sample T-test against 0
+    t_res <- t.test(data_vec, mu = 0)
+    # Calculate Cohen's d for one-sample
+    d_res <- effectsize::cohens_d(data_vec, mu = 0)
+    # Return results row
+    data.frame(
+      Variable = var_name,
+      Mean     = round(mean(data_vec), 2),
+      t_stat   = round(t_res$statistic, 2),
+      df       = t_res$parameter,
+      p_value  = t_res$p.value,
+      Cohens_d = round(d_res$Cohens_d, 2),
+      CI_Lower = round(d_res$CI_low, 2),
+      CI_Upper = round(d_res$CI_high, 2)
+    )
+  })
+  # Arrange by Effect Size
+  one_sample_results <- one_sample_results %>%
+    mutate(p_adj = round(p.adjust(p_value, method = "bonferroni"), 3)) %>%
+    arrange(desc(abs(Cohens_d)))
+  
+  return(one_sample_results)
+}
+
+#---------------------------------
+# Create a function to summarize the continuous variables
+#---------------------------------
+# Input: A vector of variable names
+# Output: Descrtiptive table
+get_cont_descriptives <- function(num_vars) {
+  # Create the summary table
+  cont_descriptive <- t(sapply(num_vars, function(var_names) {
+    x <- mot_clean[[var_names]]
+    c(
+      min       = min(x, na.rm = TRUE),
+      max       = max(x, na.rm = TRUE),
+      mean      = round(mean(x, na.rm = TRUE), digits = 2),
+      sd        = round(sd(x, na.rm = TRUE), digits = 2),
+      skewness  = round(skewness(x, na.rm = TRUE), digits = 2),
+      kurtosis  = round(kurtosis(x, na.rm = TRUE), digits = 2)
+    )
+  }))
+  
+  # Reorder columns
+  cont_descriptive <- as.data.frame(cont_descriptive)
+  cont_descriptive$variable <- rownames(cont_descriptive)
+  rownames(cont_descriptive) <- NULL
+  cont_descriptive <- cont_descriptive[, c("variable", "mean", "sd", "min", "max", "skewness", "kurtosis")]
+  
+  # Round numeric columns
+  cont_descriptive[, c("mean", "sd", "min", "max", "skewness", "kurtosis")] <-
+    lapply(cont_descriptive[, c("mean", "sd", "min", "max", "skewness", "kurtosis")], function(x)
+      round(as.numeric(x), 3))
+  
+  # Return the descrtiptive table
+  return(cont_descriptive)
+}
+
+```
+
+# Demographic tables and key variables
+
+## Descriptive summary tables
+
+```{r demographics_summary}
+#---------------------------------
+# Summarize the continuous variables
+#---------------------------------
+# Variables in the summary table
+num_vars <- c(
+  "age",
+  "change_goal_initial",
+  "change_goal_final",
+  "prosociality",
+  "TriPM_total",
+  "AUC",
+  "k_exponential"
+)
+
+# Create the summary table
+cont_descriptive <- t(sapply(num_vars, function(var_names) {
+  x <- mot_clean[[var_names]]
+  c(
+    mean      = mean(x, na.rm = TRUE),
+    sd        = sd(x, na.rm = TRUE),
+    min       = min(x, na.rm = TRUE),
+    max       = max(x, na.rm = TRUE),
+    skewness  = skewness(x, na.rm = TRUE),
+    kurtosis  = kurtosis(x, na.rm = TRUE)
+  )
+}))
+
+# Reorder columns
+cont_descriptive <- as.data.frame(cont_descriptive)
+cont_descriptive$variable <- rownames(cont_descriptive)
+rownames(cont_descriptive) <- NULL
+cont_descriptive <- cont_descriptive[, c("variable", "mean", "sd", "min", "max", "skewness", "kurtosis")]
+
+# Round numeric columns
+cont_descriptive[, c("mean", "sd", "min", "max", "skewness", "kurtosis")] <-
+  lapply(cont_descriptive[, c("mean", "sd", "min", "max", "skewness", "kurtosis")], function(x)
+    round(as.numeric(x), 2))
+
+# Print the continuous variable summary
+knitr::kable(cont_descriptive, caption = "Descriptives of Key Variables")
+
+#---------------------------------
+# Summarize the categorical demographics
+#---------------------------------
+# Make sure the variables are factors
+factor_vars <- c(
+  "feedback_first",
+  "gender",
+  "race",
+  "education",
+  "employment",
+  "religion",
+  "income_categorical"
+)
+
+mot_clean[factor_vars] <- lapply(mot_clean[factor_vars], as.factor)
+
+# Create summary table
+summary(mot_clean[, c("gender",
+                      "education",
+                      "religion",
+                      "race",
+                      "employment",
+                      "income_categorical"
+                      )])
+
+# Create summary table
+mot_clean %>%
+  dplyr::select(all_of(factor_vars)) %>%
+  tbl_summary(
+    statistic = list(all_categorical() ~ "{n} ({p}%)"),
+    digits = list(all_categorical() ~ c(0, 1))
+  )
+
+```
+
+# Bivariate analysis
+## Key variables
+
+Descriptive and correlation table of key variables (prosociality/honesty-humility, TriPM, SDT, change goals, personality domains, age).
+
+Correlation between prosocial-related variables (prosociality/honesty-humility and SDT parameters) -> confirm the link by examining the relationship between the honesty-humility trait and social discounting parameters.
+
+```{r corr table key vars}
+#---------------------------------
+# Bivariate analysis - key vars
+#---------------------------------
+# Variables of interest
+var_cols <- c(
+  "change_goal_initial",
+  "change_goal_final",
+  "prosociality",
+  "TriPM_total",
+  "AUC",
+  "k_exponential",
+  "age"
+)
+
+# ----- Creating correlation table -----
+apa.cor.table(mot_clean[, var_cols], table.number = 2, filename = "../Figures/Correlations.doc")
+
+# ----- Calculate correlation between vars of interest -----
+# Correlation between Honesty-humility and AUC
+cor.test(mot_clean$prosociality, mot_clean$AUC, method = "pearson")
+
+# Correlation between Honesty-humility and k_exponential
+cor.test(mot_clean$prosociality, mot_clean$k_exponential, method = "pearson")
+
+# Correlation between Honesty-humility and TriPM_total
+cor.test(mot_clean$prosociality, mot_clean$TriPM_total, method = "pearson")
+
+# Correlation between Honesty-humility and TriPM_meanness
+cor.test(mot_clean$prosociality, mot_clean$TriPM_meanness, method = "pearson")
+
+# Correlation between Honesty-humility and TriPM_boldness
+cor.test(mot_clean$prosociality, mot_clean$TriPM_boldness, method = "pearson")
+
+# Correlation between Honesty-humility and TriPM_disinhibition
+cor.test(mot_clean$prosociality,
+         mot_clean$TriPM_disinhibition,
+         method = "pearson")
+
+```
+
+# Goal One: Prosociality change goals
+
+## Initial prosociality change goal
+
+The following block calculated the percentage of participants who wanted to be more, less prosocial, or stay the same. It also tests the extent to which individuals’ prosociality level is linked to their prosociality change goals.
+
+
+```{r characteristics and change goals}
+#---------------------------------
+# Participants initial change goals >0, <0, or =0
+#---------------------------------
+# ----- initial change goal -----
+# % wanting to be less prosocial
+sum(mot_clean$change_goal_initial < 0) / nrow(mot_clean)
+# % wanting to be more prosocial
+sum(mot_clean$change_goal_initial > 0) / nrow(mot_clean)
+# % wanting to stay the same
+sum(mot_clean$change_goal_initial == 0) / nrow(mot_clean)
+
+#---------------------------------
+# Initial change goal vs prosociality
+#---------------------------------
+# With control var only
+control_model <- lm(change_goal_initial ~ age + gender + income, data = mot_clean)
+
+# With prosocial predictor
+prosocial_model <- lm(change_goal_initial ~ prosociality + age + gender + income, data = mot_clean)
+
+# Check assumptions
+plot(prosocial_model)
+
+# Summarize prosocial model
+summary(prosocial_model)
+
+```
+## Prosociality construal change goals
+
+The following block tests whether the prosocial construals we provided motivated people.
+
+```{r Prosociality characters}
+# List of the prosocial construals motivation variables
+traits <- c(
+  "honest_change_goal",
+  "humble_change_goal",
+  "selfless_change_goal",
+  "caring_change_goal",
+  "moral_change_goal",
+  "altruistic_change_goal",
+  "helpful_change_goal",
+  "generous_change_goal",
+  "empathetic_change_goal",
+  "compassionate_change_goal",
+  "kind_change_goal",
+  "considerate_change_goal",
+  "cooperative_change_goal"
+)
+
+#---------------------------------
+# Create the summary tables
+#---------------------------------
+# Create table using the get_cont_descriptives function
+traits_descriptives <- get_cont_descriptives(traits)
+# Rank from highest mean to lowest
+traits_descriptives <- traits_descriptives %>%
+  arrange(desc(mean))
+# Print the summary table
+knitr::kable(traits_descriptives, caption = "Descriptives of the Prosocial Construal Change Goals")
+
+# Create table using the get_one_sample_results function
+traits_t_test <- get_one_sample_results(traits)
+# Print the summary table
+knitr::kable(traits_t_test, caption = "One Sample T-Test Results of the Prosocial Construal Change Goals")
+
+#---------------------------------
+# Create the dot graph with CI 
+#---------------------------------
+# Creating a summary table of the prosocial construal change goals' Mean, SD, N, and CI using the get_summary_with_CI function
+traits_summary_with_CI <- get_summary_with_CI(traits)
+
+# Drafting a dot plot of mean change goal ratings with CI
+traits_dot_plot <- ggplot(traits_summary_with_CI, aes(x = variable_name, y = rating)) +
+  # Draw the error bars
+  geom_errorbar(aes(ymin = rating - ci, ymax = rating + ci),
+                width = 0.2,
+                color = "gray50") +
+  # Draw the mean points
+  geom_point(size = 3, color = "#2c7fb8") +
+  
+  # Set range
+  # Remane the lables
+  scale_y_continuous(breaks = c(0, 1, 2, 3), expand = expansion(mult = c(0.2, 0))) +
+  
+  geom_hline(yintercept = 0,
+             linetype = "dashed",
+             color = "gray75") +
+  
+  # Rename variables
+  scale_x_discrete(
+    labels = c(
+      "honest_change_goal" = "Honest",
+      "humble_change_goal" = "Humble",
+      "selfless_change_goal" = "Selfless",
+      "caring_change_goal" = "Caring",
+      "moral_change_goal" = "Moral",
+      "altruistic_change_goal" = "Altruistic",
+      "helpful_change_goal" = "Helpful",
+      "generous_change_goal" = "Generous",
+      "empathetic_change_goal" = "Empathetic",
+      "compassionate_change_goal" = "Compassionate",
+      "kind_change_goal" = "Kind",
+      "considerate_change_goal" = "Considerate",
+      "cooperative_change_goal" = "Cooperative"
+    )
+  ) +
+  
+  # Flip coordinates for easier reading
+  coord_flip(ylim = c(0, 3)) +
+  # Formatting for better visualization
+  theme_minimal() +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(face = "bold")
+  ) +
+  # Add titles and axis labels
+  labs(y = "Self-Rated Change Goal", caption = ".")
+
+traits_dot_plot
+
+ggsave(
+  filename = "../Figures/Figure 1_Mean Ratings of the Motivation to Change Prosocial Traits.png",
+  plot = traits_dot_plot,
+  width = 6,
+  height = 4,
+  dpi = 300
+)
+
+```
+
+# Goal Two: Conditions' effects on change goals
+Second, we examine whether psychoeducation or feedback on their own prosociality is effective in inspiring prosociality improvements among individuals with different characteristics.
+
+```{r motivations changes vs prosociality prep}
+#---------------------------------
+# Data prep
+#---------------------------------
+# Select variables for analysis
+MEM_var <- mot_clean %>%
+  select(
+    # id, condition order, & controls
+    participant_id,
+    feedback_first,
+    age,
+    gender,
+    income,
+    
+    # prosociality & psychopathy
+    prosociality,
+    TriPM_total,
+    
+    # change goal variables
+    change_goal_initial,
+    change_goal_final,
+    change_goal_pre_feedback,
+    change_goal_post_feedback,
+    change_goal_pre_psychoed,
+    change_goal_post_psychoed
+  )
+```
+
+## All conditions
+
+Compare the change goals before and after all conditions (psychoed + feedback).
+
+### Models
+
+```{r motivations changes vs prosociality all conditions}
+#---------------------------------
+# Prep
+#---------------------------------
+# Transform MEM_var from long to wide
+mot_all <- MEM_var %>%
+  pivot_longer(
+    cols = c(change_goal_initial, change_goal_final),
+    names_to = "time_all_conditions",
+    values_to = "change_goal_all_condition"
+  ) %>%
+  mutate(
+    time_all_conditions = dplyr::recode(
+      time_all_conditions,
+      change_goal_initial = "Initial",
+      change_goal_final   = "Final"
+    )
+  )
+
+# Factor time and reorder
+mot_all$time_all_conditions <- factor(mot_all$time_all_conditions, levels = c("Initial", "Final"))
+
+#---------------------------------
+# Models
+#---------------------------------
+# ----- Standardize -----
+mot_all_z <- mot_all
+
+# z-score outcome + continuous predictors
+mot_all_z$change_z        <- as.numeric(scale(mot_all_z$change_goal_all_condition))
+mot_all_z$prosociality_z  <- as.numeric(scale(mot_all_z$prosociality))
+mot_all_z$age_z           <- as.numeric(scale(mot_all_z$age))
+mot_all_z$income_z        <- as.numeric(scale(mot_all_z$income))
+
+# ----- Baseline models -----
+model_empty_z <- lmer(change_z ~ 1 +
+                        (1 | participant_id), data = mot_all_z)
+summary(model_empty_z)
+
+model_control_z <- lmer(change_z ~ age_z + gender + income_z +
+                          (1 | participant_id), data = mot_all_z)
+summary(model_control_z)
+
+model_x_interaction_z <- lmer(
+  change_z ~ time_all_conditions + prosociality_z +
+    age_z + gender + income_z +
+    (1 | participant_id),
+  data = mot_all_z
+)
+summary(model_x_interaction_z)
+
+# ----- Interaction Model - standardized -----
+# Time x prosocial model
+model_all_z <- lmer(
+  change_z ~ time_all_conditions * prosociality_z + age_z + gender + income_z + (1 |
+                                                                                   participant_id),
+  data = mot_all_z
+)
+summary(model_all_z)
+
+tab_model(
+  model_all_z,
+  show.se = TRUE,
+  show.stat = TRUE,
+  show.ci = FALSE,
+  p.style = "numeric",
+  show.aic = FALSE,
+  show.icc = FALSE,
+  string.est = "Estimate",
+  string.se = "SE",
+  string.stat = "t",
+  string.p = "p"
+)
+
+# Check assumptions
+plot(model_all_z)
+qqnorm(resid(model_all_z))
+qqline(resid(model_all_z))
+
+# ----- Interaction Model - non-standardized-----
+# Time x prosocial model
+model_all <- lmer(
+  change_goal_all_condition ~ time_all_conditions * prosociality +
+    age + gender + income +
+    (1 | participant_id),
+  data = mot_all
+)
+
+summary(model_all)
+
+```
+
+### Graph
+
+```{r motivations changes vs prosociality all conditions - graphs}
+#---------------------------------
+# Graph - line graph
+#---------------------------------
+# Estimated marginal means
+emm <- emmeans(model_all,
+               ~ time_all_conditions | prosociality,
+               at = list(prosociality = c(
+                 mean(mot_clean$prosociality, na.rm = TRUE) -
+                   sd(mot_clean$prosociality, na.rm = TRUE),
+                 mean(mot_clean$prosociality, na.rm = TRUE),
+                 mean(mot_clean$prosociality, na.rm = TRUE) +
+                   sd(mot_clean$prosociality, na.rm = TRUE)
+               )))
+emm_df <- as.data.frame(emm)
+
+# Factor prosociality levels and time points
+emm_df$prosociality_f <- factor(emm_df$prosociality,
+                                labels = c("Low (−1 SD)", "Mean", "High (+1 SD)"))
+emm_df$time_all_conditions <- factor(emm_df$time_all_conditions, levels = c("Initial", "Final"))
+
+# Create graph using the estimated marginal means
+all_conditions_plot <- ggplot(
+  emm_df,
+  aes(
+    x = time_all_conditions,
+    y = emmean,
+    group = prosociality_f,
+    color = prosociality_f,
+    shape = prosociality_f
+  )
+) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 4) +
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL),
+                width = 0.07,
+                linewidth = 1.0) +
+  labs(
+    x = "Time (All Conditions)",
+    y = "Predicted Change Goal",
+    color = "Prosociality",
+    shape = "Prosociality"
+  ) +
+  theme_classic(base_size = 17.5)
+
+# Print graph
+all_conditions_plot
+```
+
+### Estimated marginal means
+
+```{r motivations changes vs prosociality all conditions - Estimated marginal means}
+# Define the low and high prosociality
+pros_levels <- c(
+  mean(mot_clean$prosociality, na.rm = TRUE) -
+    sd(mot_clean$prosociality, na.rm = TRUE),
+  mean(mot_clean$prosociality, na.rm = TRUE),
+  mean(mot_clean$prosociality, na.rm = TRUE) +
+    sd(mot_clean$prosociality, na.rm = TRUE)
+)
+pros_labels <- c("Low Prosociality", "Mean Prosociality", "High Prosociality")
+
+# Estimated marginal means
+emm <- emmeans(model_all,
+               ~ time_all_conditions | prosociality,
+               at = list(prosociality = pros_levels))
+contrast(emm, method = "pairwise")
+emm_df <- as.data.frame(emm) %>%
+  mutate(prosoc_group = factor(prosociality, levels = pros_levels, labels = pros_labels))
+
+# Pairwise time contrast within each prosociality value
+con_df <- contrast(emm, method = "pairwise") %>%
+  as.data.frame() %>%
+  mutate(prosoc_group = factor(prosociality, levels = pros_levels, labels = pros_labels))
+
+```
+
+## Feedback condition
+
+Compare the change goals before and after the feedback condition.
+
+Only include the participants who completed the feedback condition first (n = 102).
+
+### Models
+
+```{r motivations changes vs prosociality feedback}
+#---------------------------------
+# Prep
+#---------------------------------
+# Transform MEM_var from long to wide
+mot_feedback <- MEM_var %>%
+  pivot_longer(
+    cols = c(change_goal_pre_feedback, change_goal_post_feedback),
+    names_to = "time_feedback",
+    values_to = "change_goal_feedback"
+  ) %>%
+  mutate(
+    time_feedback = dplyr::recode(
+      time_feedback,
+      change_goal_pre_feedback  = "Pre-feedback",
+      change_goal_post_feedback = "Post-feedback"
+    )
+  )
+
+# Factor time and reorder
+mot_feedback$time_feedback <- factor(
+  mot_feedback$time_feedback,
+  levels = c("Pre-feedback", "Post-feedback")
+)
+# Keep only when the participant completed the feedback condition first
+mot_feedback <- mot_feedback %>%
+  filter(feedback_first == 1)
+
+#---------------------------------
+# Models
+#---------------------------------
+# ----- Standardize -----
+mot_feedback_z <- mot_feedback
+
+# z-score outcome + continuous predictors
+mot_feedback_z$change_z        <- as.numeric(scale(mot_feedback_z$change_goal_feedback))
+mot_feedback_z$prosociality_z  <- as.numeric(scale(mot_feedback_z$prosociality))
+mot_feedback_z$age_z           <- as.numeric(scale(mot_feedback_z$age))
+mot_feedback_z$income_z        <- as.numeric(scale(mot_feedback_z$income))
+
+# ----- Baseline models -----
+model_empty_z <- lmer(change_z ~ 1 +
+                        (1 | participant_id), data = mot_feedback_z)
+summary(model_empty_z)
+
+model_control_z <- lmer(change_z ~ age_z + gender + income_z +
+                          (1 |
+                             participant_id), data = mot_feedback_z)
+summary(model_control_z)
+
+model_x_interaction_z <- lmer(
+  change_z ~ time_feedback + prosociality_z +
+    age_z + gender + income_z +
+    (1 | participant_id),
+  data = mot_feedback_z
+)
+summary(model_x_interaction_z)
+
+model_time_z <- lmer(
+  change_z ~ time_feedback +
+    age_z + gender + income_z +
+    (1 | participant_id),
+  data = mot_feedback_z
+)
+summary(model_time_z)
+
+# ----- Interaction Model - standardized -----
+# Time x prosocial model
+model_feedback_z <- lmer(
+  change_z ~ time_feedback * prosociality_z + age_z + gender + income_z + (1 |
+                                                                             participant_id),
+  data = mot_feedback_z
+)
+
+summary(model_feedback_z)
+
+tab_model(
+  model_feedback_z,
+  show.se = TRUE,
+  show.stat = TRUE,
+  show.ci = FALSE,
+  p.style = "numeric",
+  show.aic = FALSE,
+  show.icc = FALSE,
+  string.est = "Estimate",
+  string.se = "SE",
+  string.stat = "t",
+  string.p = "p"
+)
+
+# Check assumptions
+plot(model_feedback_z)
+qqnorm(resid(model_feedback_z))
+qqline(resid(model_feedback_z))
+
+# ----- Interaction Model - non-standardized-----
+# Time x prosocial model
+model_feedback <- lmer(
+  change_goal_feedback ~ time_feedback * prosociality +
+    age + gender + income +
+    (1 | participant_id),
+  data = mot_feedback
+)
+
+summary(model_feedback)
+
+```
+
+### Graph
+
+```{r motivations changes vs prosociality feedback condition - graphs}
+#---------------------------------
+# Prep
+#---------------------------------
+# Subset mot_all for accurate prosociality sd calculation of this subgroup
+# Keep only when the participant completed the feedback condition first
+mot_feedback_wide <- mot_clean %>%
+  filter(feedback_first == 1)
+
+#---------------------------------
+# Graph - line graph
+#---------------------------------
+# Estimated marginal means
+emm <- emmeans(model_feedback,
+               ~ time_feedback | prosociality,
+               at = list(prosociality = c(
+                 mean(mot_feedback_wide$prosociality, na.rm = TRUE) -
+                   sd(mot_feedback_wide$prosociality, na.rm = TRUE),
+                 mean(mot_feedback_wide$prosociality, na.rm = TRUE),
+                 mean(mot_feedback_wide$prosociality, na.rm = TRUE) +
+                   sd(mot_feedback_wide$prosociality, na.rm = TRUE)
+               )))
+emm_df <- as.data.frame(emm)
+
+# Factor prosociality levels and time points
+emm_df$prosociality_f <- factor(emm_df$prosociality,
+                                labels = c("Low (−1 SD)", "Mean", "High (+1 SD)"))
+emm_df$time_feedback <- factor(emm_df$time_feedback, levels = c("Pre-feedback", "Post-feedback"))
+
+# Create graph using the estimated marginal means
+feedback_condition_plot <- ggplot(
+  emm_df,
+  aes(
+    x = time_feedback,
+    y = emmean,
+    group = prosociality_f,
+    color = prosociality_f,
+    shape = prosociality_f
+  )
+) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 4) +
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL),
+                width = 0.07,
+                linewidth = 1.0) +
+  labs(
+    x = "Time (Feedback)",
+    y = "Predicted Change Goal",
+    color = "Prosociality",
+    shape = "Prosociality"
+  ) +
+  theme_classic(base_size = 17.5)
+
+# Print graph
+feedback_condition_plot
+
+```
+
+### Estimated marginal means
+
+```{r motivations changes vs prosociality feedback condition - Estimated marginal means}
+# Define the low and high prosociality
+pros_levels <- c(
+  mean(mot_feedback_wide$prosociality, na.rm = TRUE) -
+    sd(mot_feedback_wide$prosociality, na.rm = TRUE),
+  mean(mot_feedback_wide$prosociality, na.rm = TRUE),
+  mean(mot_feedback_wide$prosociality, na.rm = TRUE) +
+    sd(mot_feedback_wide$prosociality, na.rm = TRUE)
+)
+pros_labels <- c("Low Prosociality", "Mean Prosociality", "High Prosociality")
+
+# Estimated marginal means
+emm <- emmeans(model_feedback,
+               ~ time_feedback | prosociality,
+               at = list(prosociality = pros_levels))
+contrast(emm, method = "pairwise")
+emm_df <- as.data.frame(emm) %>%
+  mutate(prosoc_group = factor(prosociality, levels = pros_levels, labels = pros_labels))
+
+# Pairwise time contrast within each prosociality value
+con_df <- contrast(emm, method = "pairwise") %>%
+  as.data.frame() %>%
+  mutate(prosoc_group = factor(prosociality, levels = pros_levels, labels = pros_labels))
+
+```
+
+## Psychoed condition
+
+Compare the change goals before and after the psychoed condition.
+
+Only include the participants who completed the psychoed condition first (n = 98).
+
+### Models
+
+```{r motivations changes vs prosociality, psychoed condition}
+#---------------------------------
+# Prep
+#---------------------------------
+# Transform MEM_var from long to wide
+mot_psychoed <- MEM_var %>%
+  pivot_longer(
+    cols = c(change_goal_pre_psychoed, change_goal_post_psychoed),
+    names_to = "time_psychoed",
+    values_to = "change_goal_psychoed"
+  ) %>%
+  mutate(
+    time_psychoed = dplyr::recode(
+      time_psychoed,
+      change_goal_pre_psychoed  = "Pre-psychoed",
+      change_goal_post_psychoed = "Post-psychoed"
+    )
+  )
+
+# Factor time and reorder
+mot_psychoed$time_psychoed <- factor(mot_psychoed$time_psychoed,
+                                         levels = c("Pre-psychoed", "Post-psychoed"))
+# Keep only when the participant completed the psychoed condition first
+mot_psychoed <- mot_psychoed %>%
+  filter(feedback_first == 0)
+
+#---------------------------------
+# Models
+#---------------------------------
+# ----- Standardize -----
+mot_psychoed_z <- mot_psychoed
+
+# z-score outcome + continuous predictors
+mot_psychoed_z$change_z        <- as.numeric(scale(mot_psychoed_z$change_goal_psychoed))
+mot_psychoed_z$prosociality_z  <- as.numeric(scale(mot_psychoed_z$prosociality))
+mot_psychoed_z$age_z           <- as.numeric(scale(mot_psychoed_z$age))
+mot_psychoed_z$income_z        <- as.numeric(scale(mot_psychoed_z$income))
+
+# ----- Baseline models -----
+model_empty_z <- lmer(change_z ~ 1 +
+                        (1 |
+                           participant_id), data = mot_psychoed_z)
+summary(model_empty_z)
+
+model_control_z <- lmer(change_z ~ age_z + gender + income_z +
+                          (1 |
+                             participant_id), data = mot_psychoed_z)
+summary(model_control_z)
+
+model_x_interaction_z <- lmer(
+  change_z ~ time_psychoed + prosociality_z +
+    age_z + gender + income_z +
+    (1 | participant_id),
+  data = mot_psychoed_z
+)
+summary(model_x_interaction_z)
+
+# ----- Interaction Model - standardized -----
+# Time x prosocial model
+model_psychoed_z <- lmer(
+  change_z ~ time_psychoed * prosociality_z + age_z + gender + income_z + (1 |
+                                                                               participant_id),
+  data = mot_psychoed_z
+)
+summary(model_psychoed_z)
+
+tab_model(
+  model_psychoed_z,
+  show.se = TRUE,
+  show.stat = TRUE,
+  show.ci = FALSE,
+  p.style = "numeric",
+  show.aic = FALSE,
+  show.icc = FALSE,
+  string.est = "Estimate",
+  string.se = "SE",
+  string.stat = "t",
+  string.p = "p"
+)
+
+# Check assumptions
+plot(model_psychoed_z)
+qqnorm(resid(model_psychoed_z))
+qqline(resid(model_psychoed_z))
+
+# ----- Interaction Model - non-standardized-----
+# Time x prosocial model
+model_psychoed <- lmer(
+  change_goal_psychoed ~ time_psychoed * prosociality +
+    age + gender + income +
+    (1 | participant_id),
+  data = mot_psychoed
+)
+
+summary(model_psychoed)
+
+```
+
+### Graph
+
+```{r motivations changes vs prosociality psychoed condition - graphs}
+#---------------------------------
+# Prep
+#---------------------------------
+# Subset mot_all for accurate prosociality sd calculation of this subgroup
+# Keep only when the participant completed the psychoed condition first
+mot_psychoed_wide <- mot_clean %>%
+  filter(feedback_first == 0)
+
+#---------------------------------
+# Graph - line graph
+#---------------------------------
+# Estimated marginal means
+emm <- emmeans(model_psychoed,
+               ~ time_psychoed | prosociality,
+               at = list(prosociality = c(
+                 mean(mot_psychoed_wide$prosociality, na.rm = TRUE) -
+                   sd(mot_psychoed_wide$prosociality, na.rm = TRUE),
+                 mean(mot_psychoed_wide$prosociality, na.rm = TRUE),
+                 mean(mot_psychoed_wide$prosociality, na.rm = TRUE) +
+                   sd(mot_psychoed_wide$prosociality, na.rm = TRUE)
+               )))
+emm_df <- as.data.frame(emm)
+
+# Factor prosociality levels and time points
+emm_df$prosociality_f <- factor(emm_df$prosociality,
+                                labels = c("Low (−1 SD)", "Mean", "High (+1 SD)"))
+emm_df$time_psychoed <- factor(emm_df$time_psychoed,
+                                 levels = c("Pre-psychoed", "Post-psychoed"))
+
+# Create graph using the estimated marginal means
+psychoed_condition_plot <- ggplot(
+  emm_df,
+  aes(
+    x = time_psychoed,
+    y = emmean,
+    group = prosociality_f,
+    color = prosociality_f,
+    shape = prosociality_f
+  )
+) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 4) +
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL),
+                width = 0.07,
+                linewidth = 1.0) +
+  labs(
+    x = "Time (psychoed)",
+    y = "Predicted Change Goal",
+    color = "Prosociality",
+    shape = "Prosociality"
+  ) +
+  theme_classic(base_size = 17.5)
+
+# Print graph
+psychoed_condition_plot
+
+```
+
+### Estimated marginal means
+
+```{r motivations changes vs prosociality psychoed condition - Estimated marginal means}
+# Define the low and high prosociality
+pros_levels <- c(
+  mean(mot_psychoed_wide$prosociality, na.rm = TRUE) -
+    sd(mot_psychoed_wide$prosociality, na.rm = TRUE),
+  mean(mot_psychoed_wide$prosociality, na.rm = TRUE),
+  mean(mot_psychoed_wide$prosociality, na.rm = TRUE) +
+    sd(mot_psychoed_wide$prosociality, na.rm = TRUE)
+)
+pros_labels <- c("Low Prosociality", "Mean Prosociality", "High Prosociality")
+
+# Estimated marginal means
+emm <- emmeans(model_psychoed,
+               ~ time_psychoed | prosociality,
+               at = list(prosociality = pros_levels))
+contrast(emm, method = "pairwise")
+emm_df <- as.data.frame(emm) %>%
+  mutate(prosoc_group = factor(prosociality, levels = pros_levels, labels = pros_labels))
+
+# Pairwise time contrast within each prosociality value
+con_df <- contrast(emm, method = "pairwise") %>%
+  as.data.frame() %>%
+  mutate(prosoc_group = factor(prosociality, levels = pros_levels, labels = pros_labels))
+
+```
+### Motivational effectiveness of psychoeducational information
+
+The following block tests whether the information we provided in the psychoed condition motivated people, and whether participants with different prosociality levels found them differently motivating.
+
+```{r motivators}
+# List of the prosocial motivator variables
+motivator <- c(
+  "Mot_wellbeing",
+  "Mot_stress",
+  "Mot_religion",
+  "Mot_moral",
+  "Mot_emotion",
+  "Mot_meaning",
+  "Mot_health",
+  "Mot_reputation",
+  "Mot_connection",
+  "Mot_better_friends",
+  "Mot_job",
+  "Mot_contagion",
+  "Mot_romantic",
+  "Mot_norm",
+  "Pro_score_reaction"
+)
+
+#---------------------------------
+# Linear regression
+#---------------------------------
+# Predictor of interest: prosociality
+prosocial_predictors <- c("prosociality")
+
+# Run the linear_regression_results_table function
+# Predictor: prosociality
+# Outcomes: prosocial motivator variables
+model_table <- linear_regression_results_table(predictors = prosocial_predictors, outcome = motivator)
+
+# Apply Bonferroni correction
+model_table$adjusted_p_value <- p.adjust(model_table$p_value, method = "bonferroni")
+model_table <- model_table %>%
+  relocate(adjusted_p_value, .after = p_value) %>%
+  mutate(across(c(p_value, adjusted_p_value), ~ round(.x, 5)))
+
+# Print table
+DT::datatable(model_table,
+              caption = "The relationship between prosociality and the effectiveness of the motivational information, controlling for age, gender, and income",
+              options = list(
+                autoWidth = TRUE
+              ))
+
+#---------------------------------
+# Create the summary tables
+#---------------------------------
+# Create table using the get_cont_descriptives function
+motivator_descriptives <- get_cont_descriptives(motivator)
+# Rank from highest mean to lowest
+motivator_descriptives <- motivator_descriptives %>%
+  arrange(desc(mean))
+# Print the summary table
+knitr::kable(motivator_descriptives, caption = "Descriptives of the Effectiveness of the Motivational Information")
+
+# Create table using the get_one_sample_results function
+motivator_t_test <- get_one_sample_results(motivator)
+# Print the summary table
+knitr::kable(motivator_t_test, caption = "One Sample T-Test Results of the Effectiveness of the Motivational Information")
+
+#---------------------------------
+# Create the dot graph with CI - Separated
+#---------------------------------
+# Creating a summary table of the effectiveness ratings' Mean, SD, N, and CI using the get_summary_with_CI function
+motivator_summary_with_CI <- get_summary_with_CI(motivator)
+# Drafting a dot plot of mean effectiveness ratings with CI
+motivator_dot_plot <- ggplot(motivator_summary_with_CI, aes(x = variable_name, y = rating)) +
+  # Draw the error bars
+  geom_errorbar(aes(ymin = rating - ci, ymax = rating + ci),
+                width = 0.2,
+                color = "gray50") +
+  # Draw the mean points
+  geom_point(size = 3, color = "#2c7fb8") +
+  
+  # Set range
+  # Remane the lables
+  scale_y_continuous(breaks = c(1, 2, 3, 4, 5), expand = expansion(mult = c(0, 0))) +
+  
+  # Rename variables
+  scale_x_discrete(
+    labels = c(
+      "Mot_wellbeing" = "Well-being",
+      "Mot_stress" = "Stress",
+      "Mot_religion" = "Faith",
+      "Mot_moral" = "Morality",
+      "Mot_emotion" = "Emotions",
+      "Mot_meaning" = "Sense of Purpose",
+      "Mot_health" = "Physical Health",
+      "Mot_reputation" = "Reputation",
+      "Mot_connection" = "Social Connectedness",
+      "Mot_better_friends" = "Social Network",
+      "Mot_job" = "Profession",
+      "Mot_contagion" = "Ripple Effect",
+      "Mot_romantic" = "Romantic Appeal",
+      "Mot_norm" = "Social Norm",
+      "Pro_score_reaction" = "Effect of Feedback"
+    )
+  ) +
+  
+  # Flip coordinates for easier reading
+  coord_flip(ylim = c(1, 5)) +
+  theme_minimal() +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.title.y = element_blank(),
+    axis.title.x = element_text(size = 9.5),
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(face = "bold")
+  ) +
+  labs(y = "Self-Rated Motivational Effectiveness of Psychoeducational Information", caption = ".")
+
+# Print plot
+motivator_dot_plot
+
+# Save plot
+ggsave(
+  filename = "../Figures/Figure 3_Mean Ratings of the Motivational Effectiveness of Psychoeducational Information.png",
+  plot = motivator_dot_plot,
+  width = 6,
+  height = 4,
+  dpi = 300
+)
+
+```
+
+## Graphs - Combine & Export
+
+Combine the plots of the interactions between time and prosociality on the prosociality change goal in the feedback condition, psychoed condition, and all conditions. 
+
+```{r combine graphs}
+# Make the range same across plots
+psychoed_condition_plot <- psychoed_condition_plot + scale_y_continuous(limits = c(-0.25, 2))+ labs(title = "psychoed Condition")
+feedback_condition_plot <- feedback_condition_plot + scale_y_continuous(limits = c(-0.25, 2))+ labs(title = "Feedback Condition")+ theme(axis.title.y = element_blank())
+all_conditions_plot <- all_conditions_plot + scale_y_continuous(limits = c(-0.25, 2))+ labs(title = "All Conditions")+ theme(axis.title.y = element_blank())
+
+psychoed_condition_plot
+feedback_condition_plot
+all_conditions_plot
+
+# Combine plots side-by-side into one graph
+combined_plot <- psychoed_condition_plot + feedback_condition_plot + all_conditions_plot +
+  plot_layout(
+    ncol = 3,
+    guides = "collect",
+    axis_titles = "collect",
+    widths = c(1, 1, 1)
+  ) +
+  plot_annotation(
+    tag_levels = 
+      "a")&
+  theme(
+    axis.title = element_text(size = 16),
+    legend.position = "right",
+    aspect.ratio = 1
+  )
+
+# Print graph
+combined_plot
+
+# Save graph
+ggsave(
+  filename = "../Figures/Figure 2_The interactions between time and prosociality on the prosociality change goal.png",
+  plot = combined_plot,
+  width = 15,
+  height = 5,
+  dpi = 300
+)
+
+```
+
+
+
