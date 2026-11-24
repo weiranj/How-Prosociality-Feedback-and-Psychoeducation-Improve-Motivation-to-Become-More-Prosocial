@@ -12,6 +12,7 @@ Scripts
 - "Prosocial_Motivation_Data_Cleaning.Rmd": the data cleaning script.
 - "Prosocial Motivation Analysis.Rmd": the analysis script for the manuscript.
 - "Prosocial Motivation Sensitivity Check.Rmd": the script for the sensitivity check.
+- The HTML outputs of the scripts are also included in the Scripts folder.
 
 Original data
 - "Prosocial_Motivation_Raw_Data.csv": de-identified raw data of the relevant variables.
